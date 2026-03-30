@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chai</title>
+  <link rel="stylesheet" href="./popup.css">
+</head>
+<body>
+  <div class="popup">
+    <div class="popup-header">
+      <img src="./icon.svg" alt="Chai" class="popup-icon">
+      <h1>Chai</h1>
+      <label class="toggle">
+        <input type="checkbox" id="globalToggle">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+
+    <div class="popup-stats">
+      <span id="statsText">0 rules enabled</span>
+    </div>
+
+    <div class="popup-section">
+      <div class="section-title">Current Page</div>
+      <div id="currentRules" class="rule-list-popup"></div>
+    </div>
+
+    <button id="openOptions" class="btn-open-options">Open Settings</button>
+  </div>
+  <script type="module" src="./popup.js"></script>
+</body>
+</html>

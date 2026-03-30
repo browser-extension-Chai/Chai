@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chai Options</title>
+  <link rel="stylesheet" href="./src/options/options.css">
+</head>
+<body>
+  <div class="container">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h1><img src="./icon.svg" alt="Chai">Chai</h1>
+      </div>
+      <div id="ruleList" class="rule-list"></div>
+      <div id="emptyState" class="empty-state">
+        <p>No rules yet. Click "New Rule" to create one.</p>
+      </div>
+      <div class="sidebar-actions">
+        <button id="exportBtn" class="btn-secondary">Export</button>
+        <button id="importBtn" class="btn-secondary">Import JSON</button>
+        <button id="importUrlBtn" class="btn-secondary">Import URL</button>
+      </div>
+    </aside>
+    <main class="editor-panel" id="editorPanel" style="display:none">
+      <div class="editor-header">
+        <div class="form-row">
+          <input type="text" id="ruleName" placeholder="Rule name" class="input-name">
+        </div>
+
+        <div class="match-section">
+          <table class="match-table" id="matchTable">
+            <thead>
+              <tr>
+                <th>List</th>
+                <th>Type</th>
+                <th>Value</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="matchBody"></tbody>
+          </table>
+          <button class="btn-add-row" id="addMatchBtn">+ Add</button>
+        </div>
+      </div>
+
+      <div id="editor"></div>
+    </main>
+  </div>
+  <div id="saveToast" class="save-toast">Saved</div>
+  <script type="module" src="./src/options/options.js"></script>
+</body>
+</html>
