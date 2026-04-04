@@ -20,7 +20,8 @@ function testEntry(entry) {
 function ruleMatchesCurrentPage(rule) {
   const wl = rule.whitelist || [];
   const bl = rule.blacklist || [];
-  if (wl.length > 0 && !wl.some(testEntry)) return false;
+  if (wl.length === 0) return false;
+  if (!wl.some(testEntry)) return false;
   if (bl.some(testEntry)) return false;
   return true;
 }

@@ -1,6 +1,6 @@
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
-import { defaultKeymap, standardKeymap, historyKeymap, history, indentWithTab, copyLineDown, deleteLine, moveLineUp, moveLineDown } from "@codemirror/commands";
+import { standardKeymap, historyKeymap, history, indentWithTab, copyLineDown, deleteLine, moveLineUp, moveLineDown } from "@codemirror/commands";
 import { selectNextOccurrence } from "@codemirror/search";
 import { css } from "@codemirror/lang-css";
 import { oneDark } from "@codemirror/theme-one-dark";
@@ -17,6 +17,7 @@ const matchState = [];
 // Custom keybindings
 const customKeys = [
   { key: "Ctrl-s", preventDefault: true, run: () => { saveCurrentRule(); return true; }},
+  { key: "Shift-Alt-f", preventDefault: true, run: (view) => { formatCSS(view); return true; }},
   { key: "Ctrl-Shift-d", run: copyLineDown },
   { key: "Ctrl-Shift-k", run: deleteLine },
   { key: "Ctrl-Shift-ArrowUp", run: moveLineUp },
@@ -42,6 +43,50 @@ const editorTheme = EditorView.theme({
   ".cm-scroller": { overflow: "auto" },
 });
 
+function formatCSS(view) {
+  const raw = view.state.doc.toString();
+  const indent = "  ";
+  let out = "";
+  let depth = 0;
+  // Tokenize: strings, comments, braces, semicolons, everything else
+  const tokens = raw.match(/\/\*[\s\S]*?\*\/|"[^"]*"|'[^']*'|[{}]|[^{}]+/g) || [];
+  for (let tok of tokens) {
+    tok = tok.trim();
+    if (!tok) continue;
+    if (tok === "{") {
+      out = out.trimEnd() + " {\n";
+      depth++;
+    } else if (tok === "}") {
+      depth = Math.max(0, depth - 1);
+      out += indent.repeat(depth) + "}\n\n";
+    } else if (tok.startsWith("/*")) {
+      // comment — preserve, indent
+      const lines = tok.split("\n").map((l, i) => (i === 0 ? indent.repeat(depth) + l.trim() : indent.repeat(depth) + " " + l.trim())).join("\n");
+      out += lines + "\n";
+    } else {
+      // declarations or selectors
+      const parts = tok.split(";").map(s => s.trim()).filter(Boolean);
+      if (depth > 0) {
+        // inside a rule: each declaration on its own line
+        for (const p of parts) out += indent.repeat(depth) + p + ";\n";
+      } else {
+        // selector / at-rule
+        for (const p of parts) {
+          const s = p.trim();
+          if (s) out += indent.repeat(depth) + s + "\n";
+        }
+      }
+    }
+  }
+  out = out.replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+  if (out === raw) return;
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: out },
+  });
+  clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(() => saveCurrentRule(), 800);
+}
+
 function initEditor() {
   editorView = new EditorView({
     state: EditorState.create({
@@ -65,49 +110,45 @@ function initEditor() {
   });
 }
 
-// ── Table input ───────────────────────────────────────────────
+// ── Match rows ────────────────────────────────────────────────
 function renderMatchTable() {
-  const tbody = document.getElementById("matchBody");
-  tbody.innerHTML = matchState.map((entry, i) => `
-    <tr>
-      <td>
-        <select data-index="${i}" class="row-list">
-          <option value="whitelist" ${entry.list === "whitelist" ? "selected" : ""}>Whitelist</option>
-          <option value="blacklist" ${entry.list === "blacklist" ? "selected" : ""}>Blacklist</option>
-        </select>
-      </td>
-      <td>
-        <select data-index="${i}" class="row-type">
-          <option value="domain" ${entry.matchType === "domain" ? "selected" : ""}>domain</option>
-          <option value="regex" ${entry.matchType === "regex" ? "selected" : ""}>regex</option>
-        </select>
-      </td>
-      <td>
-        <input type="text" value="${entry.value}" data-index="${i}" class="row-value">
-      </td>
-      <td>
-        <button class="btn-remove-row" data-index="${i}">×</button>
-      </td>
-    </tr>
+  const container = document.getElementById("matchBody");
+  container.innerHTML = matchState.map((entry, i) => `
+    <div class="match-row">
+      <div class="match-pills">
+        <button class="pill pill-list ${entry.list === 'whitelist' ? 'pill-white active' : 'pill-white'}" data-index="${i}" data-field="list" data-val="whitelist">allow</button>
+        <button class="pill pill-list ${entry.list === 'blacklist' ? 'pill-black active' : 'pill-black'}" data-index="${i}" data-field="list" data-val="blacklist">block</button>
+      </div>
+      <div class="match-pills">
+        <button class="pill pill-type ${entry.matchType === 'domain' ? 'active' : ''}" data-index="${i}" data-field="type" data-val="domain">domain</button>
+        <button class="pill pill-type ${entry.matchType === 'regex' ? 'active' : ''}" data-index="${i}" data-field="type" data-val="regex">regex</button>
+      </div>
+      <input type="text" value="${entry.value}" data-index="${i}" class="row-value" placeholder="${entry.matchType === 'domain' ? 'example.com' : '.*\\.example\\.com'}">
+      <button class="btn-remove-row" data-index="${i}">×</button>
+    </div>
   `).join("");
 
-  tbody.querySelectorAll(".row-list").forEach(sel => {
-    sel.addEventListener("change", () => {
-      matchState[sel.dataset.index].list = sel.value;
+  container.querySelectorAll(".pill-list").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const i = Number(btn.dataset.index);
+      matchState[i].list = btn.dataset.val;
+      renderMatchTable();
       clearTimeout(autoSaveTimer);
       autoSaveTimer = setTimeout(() => saveCurrentRule(), 1000);
     });
   });
 
-  tbody.querySelectorAll(".row-type").forEach(sel => {
-    sel.addEventListener("change", () => {
-      matchState[sel.dataset.index].matchType = sel.value;
+  container.querySelectorAll(".pill-type").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const i = Number(btn.dataset.index);
+      matchState[i].matchType = btn.dataset.val;
+      renderMatchTable();
       clearTimeout(autoSaveTimer);
       autoSaveTimer = setTimeout(() => saveCurrentRule(), 1000);
     });
   });
 
-  tbody.querySelectorAll(".row-value").forEach(inp => {
+  container.querySelectorAll(".row-value").forEach(inp => {
     inp.addEventListener("input", () => {
       matchState[inp.dataset.index].value = inp.value;
       clearTimeout(autoSaveTimer);
@@ -115,7 +156,7 @@ function renderMatchTable() {
     });
   });
 
-  tbody.querySelectorAll(".btn-remove-row").forEach(btn => {
+  container.querySelectorAll(".btn-remove-row").forEach(btn => {
     btn.addEventListener("click", () => {
       matchState.splice(Number(btn.dataset.index), 1);
       renderMatchTable();
@@ -198,7 +239,12 @@ function loadRule(id) {
   if (!rule) return;
 
   currentRuleId = id;
-  document.getElementById("ruleName").value = rule.name || "";
+  const nameInput = document.getElementById("ruleName");
+  nameInput.value = rule.name || "";
+  nameInput.oninput = () => {
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = setTimeout(() => saveCurrentRule(), 400);
+  };
 
   matchState.length = 0;
   if (rule.whitelist) {
@@ -260,7 +306,7 @@ async function saveCurrentRule() {
   setTimeout(() => toast.classList.remove("show"), 1500);
 }
 
-async function deleteCurrentRule() {
+async function _deleteCurrentRule() {
   if (!currentRuleId) return;
   if (!confirm("Delete this rule?")) return;
 

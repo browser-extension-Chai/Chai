@@ -13,7 +13,8 @@ function testEntry(entry, url, hostname) {
 function ruleMatches(rule, url, hostname) {
   const wl = rule.whitelist || [];
   const bl = rule.blacklist || [];
-  if (wl.length > 0 && !wl.some(e => testEntry(e, url, hostname))) return false;
+  if (wl.length === 0) return false;
+  if (!wl.some(e => testEntry(e, url, hostname))) return false;
   if (bl.some(e => testEntry(e, url, hostname))) return false;
   return true;
 }

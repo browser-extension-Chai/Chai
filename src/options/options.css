@@ -183,98 +183,112 @@ body {
   white-space: nowrap;
 }
 
-/* Match sections */
+/* Match section */
 .match-section {
   display: flex;
   flex-direction: column;
+  gap: 6px;
+}
+
+.match-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.match-row {
+  display: flex;
+  align-items: center;
   gap: 8px;
-}
-
-.match-label {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  padding: 2px 6px;
-  border-radius: 3px;
-  width: fit-content;
-  background: #2c313c;
-  color: #61afef;
-  border: 1px solid #3e4451;
-}
-
-.match-table {
-  width: 100%;
-  border-collapse: collapse;
   background: #21252b;
+  border: 1px solid #21252b;
+  border-radius: 6px;
+  padding: 6px 8px;
+  transition: border-color 0.15s;
+}
+
+.match-row:hover {
+  border-color: #fbaf5e22;
+}
+
+.match-pills {
+  display: flex;
+  gap: 0;
   border-radius: 4px;
   overflow: hidden;
+  border: 1px solid #2c313c;
+  flex-shrink: 0;
 }
 
-.match-table thead {
-  background: #21252b;
-}
-
-.match-table th {
-  padding: 8px 10px;
-  text-align: left;
-  font-size: 12px;
-  font-weight: 600;
-  color: #5c6370;
+.pill {
+  padding: 3px 9px;
+  border: none;
+  background: transparent;
+  color: #3e4451;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+  line-height: 1.6;
 }
 
-.match-table th:first-child {
-  width: 150px;
+.pill:not(:last-child) {
+  border-right: 1px solid #2c313c;
 }
 
-.match-table th:nth-child(2) {
-  width: 150px;
+/* allow — 主色实心 */
+.pill-white.active {
+  background: #fbaf5e;
+  color: #1a1d23;
 }
 
-.match-table th:last-child {
-  width: 32px;
+/* block — 主色低饱和度深色版，形成对比但不引入新色 */
+.pill-black.active {
+  background: #3a2e1e;
+  color: #fbaf5e;
 }
 
-.match-table tbody tr {
-  border-top: 1px solid #282c34;
+/* type — 更克制，只高亮文字 */
+.pill-type.active {
+  background: #2c313c;
+  color: #fbaf5e;
 }
 
-.match-table td {
-  padding: 6px 10px;
+.pill:hover:not(.active) {
+  background: #2c313c;
+  color: #5c6370;
 }
 
-.match-table select {
-  width: 100%;
-  padding: 4px 6px;
-  background: #282c34;
-  border: 1px solid #3e4451;
-  border-radius: 3px;
+.match-row .row-value {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #2c313c;
+  border-radius: 0;
   color: #abb2bf;
   font-size: 13px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  transition: border-color 0.15s, color 0.15s;
 }
 
-.match-table input {
-  width: 100%;
-  padding: 4px 8px;
-  background: #282c34;
-  border: 1px solid #3e4451;
-  border-radius: 3px;
-  color: #e6e6e6;
-  font-size: 13px;
-}
-
-.match-table select:focus,
-.match-table input:focus {
+.match-row .row-value:focus {
   outline: none;
-  border-color: #61afef;
+  border-color: #fbaf5e;
+  color: #e6e6e6;
+}
+
+.match-row .row-value::placeholder {
+  color: #3e4451;
 }
 
 .btn-remove-row {
   background: none;
   border: none;
-  color: #5c6370;
+  color: #2c313c;
   cursor: pointer;
   font-size: 16px;
   padding: 0;
@@ -283,31 +297,34 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: color 0.15s;
+  border-radius: 3px;
+  flex-shrink: 0;
+  transition: color 0.12s;
+  line-height: 1;
 }
 
 .btn-remove-row:hover {
-  color: #e06c75;
+  color: #fbaf5e;
 }
 
 .btn-add-row {
-  margin-top: 6px;
-  padding: 5px 10px;
-  background: #282c34;
-  color: #abb2bf;
-  border: 1px solid #3e4451;
-  border-radius: 4px;
+  padding: 6px 12px;
+  background: transparent;
+  color: #3e4451;
+  border: 1px dashed #2c313c;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
   width: 100%;
-  transition:
-    background 0.15s,
-    color 0.15s;
+  transition: border-color 0.15s, color 0.15s;
 }
 
 .btn-add-row:hover {
-  background: #2c313c;
-  color: #e6e6e6;
+  border-color: #fbaf5e;
+  color: #fbaf5e;
 }
 
 /* Editor */
