@@ -12,16 +12,31 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest: the label migrates to Ubuntu 26 on
+    # 2026-10-19 and a release should not ride that change by surprise.
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           # Node 22+ expands the glob in `npm test`; Node 20 does not, so the
           # release stopped here before ever reaching the store upload.
           node-version: 24
           cache: npm
+
+      # Fail before building anything. The store rejects a manifest version
+      # that is not newer than the published one, and a tag that disagrees with
+      # manifest.json is almost always a forgotten version bump.
+      - name: Check the tag matches the manifest version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(node -p "require('./manifest.json').version")
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME disagrees with manifest.json version $version"
+            exit 1
+          fi
+          echo "Tag $GITHUB_REF_NAME matches manifest.json version $version"
 
       - run: npm ci
 
@@ -37,7 +52,7 @@ jobs:
           zip -r ../chai-${{ github.ref_name }}.zip .
 
       - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: chai-${{ github.ref_name }}.zip
           generate_release_notes: true
