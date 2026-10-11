@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
 
+# softprops/action-gh-release needs to create the GitHub Release; the default
+# token is read-only for contents in this organisation.
+permissions:
+  contents: write
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -13,7 +18,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 22+ expands the glob in `npm test`; Node 20 does not, so the
+          # release stopped here before ever reaching the store upload.
+          node-version: 24
           cache: npm
 
       - run: npm ci

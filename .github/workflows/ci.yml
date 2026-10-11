@@ -14,7 +14,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 22+ expands the glob in `npm test`; Node 20 does not, which is
+          # why the suite never actually ran in CI.
+          node-version: 24
           cache: npm
 
       - run: npm ci
