@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - "v*"
+  # Dry run: uploads a draft revision so the OAuth credentials, the extension id
+  # and the packaged zip can be proven against the real store API without
+  # publishing anything. The tag push remains the only path that goes public.
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Submit the uploaded revision for review (off = upload a draft only)"
+        type: boolean
+        default: false
 
 # softprops/action-gh-release needs to create the GitHub Release; the default
 # token is read-only for contents in this organisation.
@@ -25,18 +34,25 @@ jobs:
           node-version: 24
           cache: npm
 
-      # Fail before building anything. The store rejects a manifest version
-      # that is not newer than the published one, and a tag that disagrees with
-      # manifest.json is almost always a forgotten version bump.
-      - name: Check the tag matches the manifest version
+      # Fail before building anything. The store rejects a manifest version that
+      # is not newer than the published one, and a tag that disagrees with
+      # manifest.json is almost always a forgotten version bump. The zip is
+      # named from the manifest, so a manual run needs no tag at all.
+      - name: Resolve the version to release
+        id: version
         run: |
-          tag="${GITHUB_REF_NAME#v}"
           version=$(node -p "require('./manifest.json').version")
-          if [ "$tag" != "$version" ]; then
-            echo "::error::tag $GITHUB_REF_NAME disagrees with manifest.json version $version"
-            exit 1
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [ "$tag" != "$version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME disagrees with manifest.json version $version"
+              exit 1
+            fi
+            echo "Tag $GITHUB_REF_NAME matches manifest.json version $version"
+          else
+            echo "Manual run on ${GITHUB_REF_NAME}: releasing manifest.json version $version"
           fi
-          echo "Tag $GITHUB_REF_NAME matches manifest.json version $version"
 
       - run: npm ci
 
@@ -49,12 +65,15 @@ jobs:
       - name: Package extension
         run: |
           cd dist
-          zip -r ../chai-${{ github.ref_name }}.zip .
+          zip -r "../chai-${{ steps.version.outputs.version }}.zip" .
 
+      # Only a tag publishes: a manual run must not leave a public release
+      # behind for a version the store has not accepted yet.
       - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
-          files: chai-${{ github.ref_name }}.zip
+          files: chai-${{ steps.version.outputs.version }}.zip
           generate_release_notes: true
 
       - name: Publish to Chrome Web Store
@@ -64,4 +83,7 @@ jobs:
           client-id: ${{ secrets.CHROME_CLIENT_ID }}
           client-secret: ${{ secrets.CHROME_CLIENT_SECRET }}
           refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
-          file-path: chai-${{ github.ref_name }}.zip
+          file-path: chai-${{ steps.version.outputs.version }}.zip
+          # A tag push publishes; a manual run publishes only when asked to, so
+          # the first ever use of these credentials can be a harmless upload.
+          publish: ${{ github.event_name == 'push' || inputs.publish }}
