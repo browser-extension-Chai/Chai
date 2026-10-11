@@ -29,7 +29,9 @@ jobs:
 
       - run: npm run build
 
-      - uses: actions/upload-artifact@v5
+      # v6 is the major that actually defaults to the Node 24 runtime: v5 only
+      # had preliminary support and still declares `runs.using: node20`.
+      - uses: actions/upload-artifact@v6
         with:
           name: dist
           path: dist/
