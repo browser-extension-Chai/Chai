@@ -6,6 +6,7 @@ import { css } from "@codemirror/lang-css";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { createRuleStore } from "../shared/ruleStore.js";
 import { byteSize, checkRegex, createRuleId, normalizeRules } from "../shared/rules.js";
+import { autoFormatView } from "./autoFormat.js";
 
 const store = createRuleStore({ onError: (err) => showToast(err.message, "error") });
 
@@ -23,7 +24,6 @@ const matchState = [];
 // Custom keybindings
 const customKeys = [
   { key: "Ctrl-s", preventDefault: true, run: () => { saveCurrentRule(); return true; }},
-  { key: "Shift-Alt-f", preventDefault: true, run: (view) => { formatCSS(view); return true; }},
   { key: "Ctrl-Shift-d", run: copyLineDown },
   { key: "Ctrl-Shift-k", run: deleteLine },
   { key: "Ctrl-Shift-ArrowUp", run: moveLineUp },
@@ -64,47 +64,20 @@ function showToast(message, kind = "info", duration = 1800) {
 }
 
 // ── Editor ──────────────────────────────────────────────────
-function formatCSS(view) {
-  const raw = view.state.doc.toString();
-  const indent = "  ";
-  let out = "";
-  let depth = 0;
-  // Tokenize: strings, comments, braces, semicolons, everything else
-  const tokens = raw.match(/\/\*[\s\S]*?\*\/|"[^"]*"|'[^']*'|[{}]|[^{}]+/g) || [];
-  for (let tok of tokens) {
-    tok = tok.trim();
-    if (!tok) continue;
-    if (tok === "{") {
-      out = out.trimEnd() + " {\n";
-      depth++;
-    } else if (tok === "}") {
-      depth = Math.max(0, depth - 1);
-      out += indent.repeat(depth) + "}\n\n";
-    } else if (tok.startsWith("/*")) {
-      // comment — preserve, indent
-      const lines = tok.split("\n").map((l, i) => (i === 0 ? indent.repeat(depth) + l.trim() : indent.repeat(depth) + " " + l.trim())).join("\n");
-      out += lines + "\n";
-    } else {
-      // declarations or selectors
-      const parts = tok.split(";").map(s => s.trim()).filter(Boolean);
-      if (depth > 0) {
-        // inside a rule: each declaration on its own line
-        for (const p of parts) out += indent.repeat(depth) + p + ";\n";
-      } else {
-        // selector / at-rule
-        for (const p of parts) {
-          const s = p.trim();
-          if (s) out += indent.repeat(depth) + s + "\n";
-        }
-      }
-    }
+/**
+ * Tidy the buffer before its contents are persisted.
+ *
+ * The dispatch is synchronous, so the auto-save listener stays muted for its
+ * whole duration: reindenting must not be mistaken for a keystroke and queue a
+ * second save behind this one.
+ */
+function autoFormatEditor() {
+  suppressDocListener = true;
+  try {
+    autoFormatView(editorView);
+  } finally {
+    suppressDocListener = false;
   }
-  out = out.replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
-  if (out === raw) return;
-  view.dispatch({
-    changes: { from: 0, to: view.state.doc.length, insert: out },
-  });
-  scheduleSave(500);
 }
 
 function initEditor() {
@@ -364,6 +337,9 @@ async function saveCurrentRule() {
   // Cancel any pending debounce: this call is that save.
   clearTimeout(autoSaveTimer);
   autoSaveTimer = null;
+
+  // Persist tidy CSS: the buffer is reindented before its contents are read.
+  autoFormatEditor();
 
   const currentState = {
     name: document.getElementById("ruleName").value,
