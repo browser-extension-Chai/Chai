@@ -434,3 +434,31 @@ select:focus {
   opacity: 1;
   transform: translateY(0);
 }
+
+.save-toast.is-error {
+  background: #e06c75;
+  color: #21252b;
+  max-width: 420px;
+}
+
+/* Sync quota meter */
+.storage-usage {
+  padding: 0 16px 12px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #6b7280;
+}
+
+.storage-usage.is-warning {
+  color: #d19a66;
+}
+
+.storage-usage.is-error {
+  color: #e06c75;
+}
+
+/* Rejected regex pattern in a match row */
+.row-value.row-invalid {
+  border-color: #e06c75;
+}
+

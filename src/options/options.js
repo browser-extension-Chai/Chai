@@ -4,13 +4,19 @@ import { standardKeymap, historyKeymap, history, indentWithTab, copyLineDown, de
 import { selectNextOccurrence } from "@codemirror/search";
 import { css } from "@codemirror/lang-css";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { getRules, saveRules, deleteRule } from "../shared/storage.js";
+import { createRuleStore } from "../shared/ruleStore.js";
+import { byteSize, checkRegex, createRuleId, normalizeRules } from "../shared/rules.js";
+
+const store = createRuleStore({ onError: (err) => showToast(err.message, "error") });
 
 let editorView;
 let currentRuleId = null;
 let rules = [];
 let autoSaveTimer = null;
 let initialRuleState = null;
+let conflictNotified = false;
+let bootstrapped = false;
+let suppressDocListener = false;
 
 const matchState = [];
 
@@ -43,6 +49,21 @@ const editorTheme = EditorView.theme({
   ".cm-scroller": { overflow: "auto" },
 });
 
+// ── Feedback ────────────────────────────────────────────────
+let toastTimer = null;
+
+function showToast(message, kind = "info", duration = 1800) {
+  const toast = document.getElementById("saveToast");
+  if (!toast) return;
+  toast.textContent = message;
+  toast.dataset.kind = kind;
+  toast.classList.toggle("is-error", kind === "error");
+  toast.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove("show"), duration);
+}
+
+// ── Editor ──────────────────────────────────────────────────
 function formatCSS(view) {
   const raw = view.state.doc.toString();
   const indent = "  ";
@@ -83,8 +104,7 @@ function formatCSS(view) {
   view.dispatch({
     changes: { from: 0, to: view.state.doc.length, insert: out },
   });
-  clearTimeout(autoSaveTimer);
-  autoSaveTimer = setTimeout(() => saveCurrentRule(), 800);
+  scheduleSave(500);
 }
 
 function initEditor() {
@@ -99,9 +119,8 @@ function initEditor() {
         EditorView.lineWrapping,
         editorTheme,
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) {
-            clearTimeout(autoSaveTimer);
-            autoSaveTimer = setTimeout(() => saveCurrentRule(), 1000);
+          if (update.docChanged && !suppressDocListener) {
+            scheduleSave(600);
           }
         }),
       ],
@@ -110,31 +129,80 @@ function initEditor() {
   });
 }
 
+/** Load editor contents without triggering the auto-save listener. */
+function setEditorDoc(text) {
+  suppressDocListener = true;
+  editorView.dispatch({ changes: { from: 0, to: editorView.state.doc.length, insert: text } });
+  suppressDocListener = false;
+}
+
+function scheduleSave(delay = 600) {
+  clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(() => saveCurrentRule(), delay);
+}
+
 // ── Match rows ────────────────────────────────────────────────
+// Built with DOM APIs rather than innerHTML: rule names and match values come
+// from imported JSON and must never be parsed as markup.
 function renderMatchTable() {
   const container = document.getElementById("matchBody");
-  container.innerHTML = matchState.map((entry, i) => `
-    <div class="match-row">
-      <div class="match-pills">
-        <button class="pill pill-list ${entry.list === 'whitelist' ? 'pill-white active' : 'pill-white'}" data-index="${i}" data-field="list" data-val="whitelist">allow</button>
-        <button class="pill pill-list ${entry.list === 'blacklist' ? 'pill-black active' : 'pill-black'}" data-index="${i}" data-field="list" data-val="blacklist">block</button>
-      </div>
-      <div class="match-pills">
-        <button class="pill pill-type ${entry.matchType === 'domain' ? 'active' : ''}" data-index="${i}" data-field="type" data-val="domain">domain</button>
-        <button class="pill pill-type ${entry.matchType === 'regex' ? 'active' : ''}" data-index="${i}" data-field="type" data-val="regex">regex</button>
-      </div>
-      <input type="text" value="${entry.value}" data-index="${i}" class="row-value" placeholder="${entry.matchType === 'domain' ? 'example.com' : '.*\\.example\\.com'}">
-      <button class="btn-remove-row" data-index="${i}">×</button>
-    </div>
-  `).join("");
+  container.replaceChildren();
+
+  matchState.forEach((entry, i) => {
+    const row = document.createElement("div");
+    row.className = "match-row";
+
+    const listPills = document.createElement("div");
+    listPills.className = "match-pills";
+    for (const [value, label, cls] of [["whitelist", "allow", "pill-white"], ["blacklist", "block", "pill-black"]]) {
+      const btn = document.createElement("button");
+      btn.className = `pill pill-list ${cls}${entry.list === value ? " active" : ""}`;
+      btn.dataset.index = String(i);
+      btn.dataset.field = "list";
+      btn.dataset.val = value;
+      btn.textContent = label;
+      listPills.append(btn);
+    }
+
+    const typePills = document.createElement("div");
+    typePills.className = "match-pills";
+    for (const value of ["domain", "regex"]) {
+      const btn = document.createElement("button");
+      btn.className = `pill pill-type${entry.matchType === value ? " active" : ""}`;
+      btn.dataset.index = String(i);
+      btn.dataset.field = "type";
+      btn.dataset.val = value;
+      btn.textContent = value;
+      typePills.append(btn);
+    }
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = entry.value;
+    input.dataset.index = String(i);
+    input.className = "row-value";
+    input.placeholder = entry.matchType === "domain" ? "example.com" : ".*\\.example\\.com";
+    if (entry.matchType === "regex" && entry.value && !checkRegex(entry.value).ok) {
+      input.classList.add("row-invalid");
+      input.title = checkRegex(entry.value).reason;
+    }
+
+    const remove = document.createElement("button");
+    remove.className = "btn-remove-row";
+    remove.dataset.index = String(i);
+    remove.textContent = "×";
+    remove.setAttribute("aria-label", "Remove match row");
+
+    row.append(listPills, typePills, input, remove);
+    container.append(row);
+  });
 
   container.querySelectorAll(".pill-list").forEach(btn => {
     btn.addEventListener("click", () => {
       const i = Number(btn.dataset.index);
       matchState[i].list = btn.dataset.val;
       renderMatchTable();
-      clearTimeout(autoSaveTimer);
-      autoSaveTimer = setTimeout(() => saveCurrentRule(), 1000);
+      scheduleSave();
     });
   });
 
@@ -143,16 +211,14 @@ function renderMatchTable() {
       const i = Number(btn.dataset.index);
       matchState[i].matchType = btn.dataset.val;
       renderMatchTable();
-      clearTimeout(autoSaveTimer);
-      autoSaveTimer = setTimeout(() => saveCurrentRule(), 1000);
+      scheduleSave();
     });
   });
 
   container.querySelectorAll(".row-value").forEach(inp => {
     inp.addEventListener("input", () => {
-      matchState[inp.dataset.index].value = inp.value;
-      clearTimeout(autoSaveTimer);
-      autoSaveTimer = setTimeout(() => saveCurrentRule(), 1000);
+      matchState[Number(inp.dataset.index)].value = inp.value;
+      scheduleSave();
     });
   });
 
@@ -160,8 +226,7 @@ function renderMatchTable() {
     btn.addEventListener("click", () => {
       matchState.splice(Number(btn.dataset.index), 1);
       renderMatchTable();
-      clearTimeout(autoSaveTimer);
-      autoSaveTimer = setTimeout(() => saveCurrentRule(), 1000);
+      scheduleSave();
     });
   });
 }
@@ -179,16 +244,41 @@ function renderRuleList() {
   const emptyState = document.getElementById("emptyState");
 
   emptyState.style.display = rules.length === 0 ? "block" : "none";
+  ruleList.replaceChildren();
 
-  ruleList.innerHTML = rules.map(rule => `
-    <div class="rule-item ${rule.id === currentRuleId ? "active" : ""}" data-id="${rule.id}">
-      <div class="rule-item-header">
-        <span class="rule-status-dot ${rule.enabled ? "enabled" : ""}" data-id="${rule.id}"></span>
-        <span class="rule-item-name">${rule.name || "Untitled"}</span>
-        <button class="rule-delete-btn" data-id="${rule.id}">×</button>
-      </div>
-    </div>
-  `).join("") + `<button id="newRuleBtn" class="btn-primary btn-new-rule">+ New Rule</button>`;
+  for (const rule of rules) {
+    const item = document.createElement("div");
+    item.className = `rule-item${rule.id === currentRuleId ? " active" : ""}`;
+    item.dataset.id = rule.id;
+
+    const header = document.createElement("div");
+    header.className = "rule-item-header";
+
+    const dot = document.createElement("span");
+    dot.className = `rule-status-dot${rule.enabled ? " enabled" : ""}`;
+    dot.dataset.id = rule.id;
+    dot.title = rule.enabled ? "Enabled — click to disable" : "Disabled — click to enable";
+
+    const name = document.createElement("span");
+    name.className = "rule-item-name";
+    name.textContent = rule.name || "Untitled";
+
+    const del = document.createElement("button");
+    del.className = "rule-delete-btn";
+    del.dataset.id = rule.id;
+    del.textContent = "×";
+    del.setAttribute("aria-label", `Delete rule ${rule.name || "Untitled"}`);
+
+    header.append(dot, name, del);
+    item.append(header);
+    ruleList.append(item);
+  }
+
+  const newBtn = document.createElement("button");
+  newBtn.id = "newRuleBtn";
+  newBtn.className = "btn-primary btn-new-rule";
+  newBtn.textContent = "+ New Rule";
+  ruleList.append(newBtn);
 
   ruleList.querySelectorAll(".rule-item").forEach(item => {
     item.addEventListener("click", (e) => {
@@ -202,10 +292,11 @@ function renderRuleList() {
     dot.addEventListener("click", async (e) => {
       e.stopPropagation();
       const rule = rules.find(r => r.id === dot.dataset.id);
-      if (rule) {
-        rule.enabled = !rule.enabled;
-        await saveRules(rules);
-        renderRuleList();
+      if (!rule) return;
+      try {
+        await store.updateRule(rule.id, { enabled: !rule.enabled });
+      } catch (err) {
+        showToast(err.message, "error", 4000);
       }
     });
   });
@@ -219,18 +310,21 @@ function renderRuleList() {
         (!rule.whitelist || rule.whitelist.length === 0) &&
         (!rule.blacklist || rule.blacklist.length === 0);
 
-      if (isEmpty || confirm("Delete this rule?")) {
-        rules = await deleteRule(btn.dataset.id);
+      if (!isEmpty && !confirm("Delete this rule?")) return;
+
+      try {
         if (currentRuleId === btn.dataset.id) {
           currentRuleId = null;
           document.getElementById("editorPanel").style.display = "none";
         }
-        renderRuleList();
+        await store.deleteRule(btn.dataset.id);
+      } catch (err) {
+        showToast(err.message, "error", 4000);
       }
     });
   });
 
-  document.getElementById("newRuleBtn").addEventListener("click", createNewRule);
+  newBtn.addEventListener("click", createNewRule);
 }
 
 // ── Load/Save/Delete ────────────────────────────────────────
@@ -239,31 +333,23 @@ function loadRule(id) {
   if (!rule) return;
 
   currentRuleId = id;
+  conflictNotified = false;
+
   const nameInput = document.getElementById("ruleName");
   nameInput.value = rule.name || "";
-  nameInput.oninput = () => {
-    clearTimeout(autoSaveTimer);
-    autoSaveTimer = setTimeout(() => saveCurrentRule(), 400);
-  };
+  nameInput.oninput = () => scheduleSave(400);
 
   matchState.length = 0;
-  if (rule.whitelist) {
-    rule.whitelist.forEach(entry => matchState.push({ list: "whitelist", ...entry }));
-  }
-  if (rule.blacklist) {
-    rule.blacklist.forEach(entry => matchState.push({ list: "blacklist", ...entry }));
-  }
+  (rule.whitelist || []).forEach(entry => matchState.push({ list: "whitelist", ...entry }));
+  (rule.blacklist || []).forEach(entry => matchState.push({ list: "blacklist", ...entry }));
   renderMatchTable();
 
-  editorView.dispatch({
-    changes: { from: 0, to: editorView.state.doc.length, insert: rule.css || "" }
-  });
+  setEditorDoc(rule.css || "");
 
-  // Save initial state
   initialRuleState = {
     name: rule.name || "",
     matches: JSON.stringify(matchState),
-    css: rule.css || ""
+    css: rule.css || "",
   };
 
   document.getElementById("editorPanel").style.display = "flex";
@@ -275,13 +361,16 @@ async function saveCurrentRule() {
   const rule = rules.find(r => r.id === currentRuleId);
   if (!rule) return;
 
+  // Cancel any pending debounce: this call is that save.
+  clearTimeout(autoSaveTimer);
+  autoSaveTimer = null;
+
   const currentState = {
     name: document.getElementById("ruleName").value,
     matches: JSON.stringify(matchState),
-    css: editorView.state.doc.toString()
+    css: editorView.state.doc.toString(),
   };
 
-  // Check if changed
   const hasChanged = !initialRuleState ||
     currentState.name !== initialRuleState.name ||
     currentState.matches !== initialRuleState.matches ||
@@ -289,58 +378,155 @@ async function saveCurrentRule() {
 
   if (!hasChanged) return;
 
-  rule.name = currentState.name;
-  rule.whitelist = matchState.filter(m => m.list === "whitelist").map(({ matchType, value }) => ({ matchType, value }));
-  rule.blacklist = matchState.filter(m => m.list === "blacklist").map(({ matchType, value }) => ({ matchType, value }));
-  rule.css = currentState.css;
+  const payload = {
+    name: currentState.name,
+    whitelist: matchState.filter(m => m.list === "whitelist").map(({ matchType, value }) => ({ matchType, value })),
+    blacklist: matchState.filter(m => m.list === "blacklist").map(({ matchType, value }) => ({ matchType, value })),
+    css: currentState.css,
+  };
 
-  await saveRules(rules);
-  renderRuleList();
+  // Refuse to persist a pattern that can hang every matched page.
+  for (const entry of [...payload.whitelist, ...payload.blacklist]) {
+    if (entry.matchType !== "regex") continue;
+    const check = checkRegex(entry.value);
+    if (!check.ok) {
+      showToast(`Not saved — ${check.reason}`, "error", 5000);
+      return;
+    }
+  }
 
-  // Update initial state
-  initialRuleState = { ...currentState };
+  try {
+    await store.updateRule(currentRuleId, payload);
+    // The write is asynchronous, so the editor may have moved on. Only adopt the
+    // saved state as the new baseline if the content still matches it; otherwise
+    // re-arm the debounce so an incoming snapshot cannot roll those edits back.
+    const stillMatches = document.getElementById("ruleName").value === currentState.name &&
+      JSON.stringify(matchState) === currentState.matches &&
+      editorView.state.doc.toString() === currentState.css;
 
-  // Show toast
-  const toast = document.getElementById("saveToast");
-  toast.classList.add("show");
-  setTimeout(() => toast.classList.remove("show"), 1500);
-}
-
-async function _deleteCurrentRule() {
-  if (!currentRuleId) return;
-  if (!confirm("Delete this rule?")) return;
-
-  rules = await deleteRule(currentRuleId);
-  currentRuleId = null;
-  matchState.length = 0;
-  document.getElementById("editorPanel").style.display = "none";
-  renderRuleList();
+    if (stillMatches) {
+      initialRuleState = { ...currentState };
+      showToast("Saved");
+    } else {
+      scheduleSave();
+    }
+  } catch (err) {
+    showToast(err.message, "error", 5000);
+  }
 }
 
 function createNewRule() {
-  const newRule = {
-    id: crypto.randomUUID(),
+  store.addRule({
+    id: createRuleId(),
     name: "New Rule",
     enabled: true,
     whitelist: [],
     blacklist: [],
     css: "/* Add your CSS here */\n",
-  };
-  rules.push(newRule);
-  saveRules(rules);
-  loadRule(newRule.id);
+  }).catch((err) => showToast(err.message, "error", 5000));
+}
+
+// ── Remote change reconciliation ────────────────────────────
+/** True when the editor holds edits that have not reached sync storage yet. */
+function isEditorDirty() {
+  if (!currentRuleId || !initialRuleState) return false;
+  if (autoSaveTimer) return true;
+  return document.getElementById("ruleName").value !== initialRuleState.name ||
+    JSON.stringify(matchState) !== initialRuleState.matches ||
+    editorView.state.doc.toString() !== initialRuleState.css;
+}
+
+function applySnapshot(snapshot) {
+  rules = snapshot.rules;
+
+  if (!bootstrapped) {
+    renderRuleList();
+    renderUsage(snapshot);
+    return;
+  }
+
+  if (currentRuleId) {
+    const incoming = rules.find(r => r.id === currentRuleId);
+
+    if (!incoming) {
+      currentRuleId = null;
+      initialRuleState = null;
+      document.getElementById("editorPanel").style.display = "none";
+      showToast("This rule was deleted on another device", "info", 3000);
+    } else {
+      const displayed = {
+        name: document.getElementById("ruleName").value,
+        matches: JSON.stringify(matchState),
+        css: editorView.state.doc.toString(),
+      };
+      const incomingState = {
+        name: incoming.name || "",
+        matches: JSON.stringify([
+          ...(incoming.whitelist || []).map(e => ({ list: "whitelist", ...e })),
+          ...(incoming.blacklist || []).map(e => ({ list: "blacklist", ...e })),
+        ]),
+        css: incoming.css || "",
+      };
+
+      if (incomingState.name !== displayed.name ||
+          incomingState.matches !== displayed.matches ||
+          incomingState.css !== displayed.css) {
+        if (isEditorDirty() && !conflictNotified) {
+          // Do not throw away unsaved edits; warn and let the user decide.
+          conflictNotified = true;
+          showToast("This rule changed on another device — press Ctrl-S to overwrite, or reopen it to discard", "error", 6000);
+        } else if (!isEditorDirty()) {
+          loadRule(currentRuleId);
+          conflictNotified = false;
+        }
+      }
+    }
+  }
+
+  renderRuleList();
+  renderUsage(snapshot);
+}
+
+async function refreshUsage() {
+  try {
+    renderUsage(null, await store.usage());
+  } catch {
+    // Usage display is optional.
+  }
+}
+
+function renderUsage(snapshot, usage = null) {
+  const el = document.getElementById("storageUsage");
+  if (!el) return;
+  if (snapshot) {
+    el.dataset.count = String(snapshot.rules.length);
+  }
+  if (!usage) {
+    el.textContent = `${snapshot?.rules?.length ?? 0} rule(s) synced`;
+    return;
+  }
+  const kb = (usage.bytes / 1024).toFixed(1);
+  const pct = Math.min(100, Math.round((usage.bytes / (100 * 1024)) * 100));
+  el.textContent = `${usage.ruleCount} rule(s) · ${kb} KB of 100 KB sync quota (${pct}%)`;
+  el.classList.toggle("is-warning", pct >= 80);
+  el.classList.toggle("is-error", pct >= 100);
 }
 
 // ── Export/Import ───────────────────────────────────────────
 function exportRules() {
-  const blob = new Blob([JSON.stringify(rules, null, 2)], { type: "application/json" });
+  const payload = JSON.stringify(rules, null, 2);
+  const blob = new Blob([payload], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = "chai-rules.json";
   a.click();
   URL.revokeObjectURL(url);
+  showToast(`Exported ${rules.length} rule(s) · ${(byteSize(payload) / 1024).toFixed(1)} KB`, "info", 2500);
 }
+
+/** Cap remote imports; a huge body should not be read into memory unbounded. */
+const MAX_IMPORT_BYTES = 2 * 1024 * 1024;
 
 function importFromFile() {
   const input = document.createElement("input");
@@ -349,44 +535,88 @@ function importFromFile() {
   input.onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    if (file.size > MAX_IMPORT_BYTES) {
+      showToast(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB; limit 2 MB)`, "error", 5000);
+      return;
+    }
     try {
-      await mergeImportedRules(JSON.parse(await file.text()));
+      const parsed = JSON.parse(await file.text());
+      await mergeImportedRules(parsed);
     } catch (err) {
-      alert("Invalid JSON file: " + err.message);
+      showToast("Invalid JSON file: " + err.message, "error", 5000);
     }
   };
   input.click();
 }
 
-async function importFromUrl() {
-  const url = prompt("Enter URL to import (e.g. GitHub Gist raw URL):");
-  if (!url) return;
+function resolveImportUrl(raw) {
+  let url;
   try {
-    const res = await fetch(url);
+    url = new URL(raw, window.location.href);
+  } catch {
+    return { error: "That is not a valid URL." };
+  }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) {
+    return { error: "Only https:// URLs can be imported (http:// is allowed for localhost)." };
+  }
+  if (url.username || url.password) {
+    return { error: "URLs containing credentials are not allowed." };
+  }
+  return { url };
+}
+
+async function importFromUrl() {
+  const raw = prompt("Enter URL to import (e.g. GitHub Gist raw URL):");
+  if (!raw) return;
+
+  const resolved = resolveImportUrl(raw.trim());
+  if (resolved.error) {
+    showToast(resolved.error, "error", 5000);
+    return;
+  }
+
+  try {
+    const res = await fetch(resolved.url, { credentials: "omit", redirect: "follow" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    await mergeImportedRules(await res.json());
+    const declared = Number(res.headers.get("content-length") || 0);
+    if (declared > MAX_IMPORT_BYTES) {
+      throw new Error(`response is too large (${(declared / 1024 / 1024).toFixed(1)} MB)`);
+    }
+    const text = await res.text();
+    if (byteSize(text) > MAX_IMPORT_BYTES) throw new Error("response is too large");
+    await mergeImportedRules(JSON.parse(text));
   } catch (err) {
-    alert("Failed to import from URL: " + err.message);
+    showToast("Failed to import from URL: " + err.message, "error", 5000);
   }
 }
 
 async function mergeImportedRules(imported) {
-  if (!Array.isArray(imported)) {
-    alert("Invalid format: expected a JSON array of rules.");
+  // Fresh ids are issued for every imported rule so a hostile file cannot
+  // overwrite an existing rule by reusing its id.
+  const result = normalizeRules(imported, { now: Date.now() });
+  if (result.error) {
+    showToast("Import rejected — " + result.error, "error", 6000);
     return;
   }
-  const newRules = imported.map(r => ({
-    id: crypto.randomUUID(),
-    name: r.name || "Imported Rule",
-    enabled: r.enabled !== false,
-    whitelist: Array.isArray(r.whitelist) ? r.whitelist : [],
-    blacklist: Array.isArray(r.blacklist) ? r.blacklist : [],
-    css: r.css || "",
-  }));
-  rules = [...rules, ...newRules];
-  await saveRules(rules);
-  renderRuleList();
-  alert(`Imported ${newRules.length} rule(s).`);
+
+  let imported_ = 0;
+  const failures = [];
+  for (const rule of result.rules) {
+    try {
+      await store.addRule(rule);
+      imported_ += 1;
+    } catch (err) {
+      failures.push(err.message);
+      break;
+    }
+  }
+
+  if (failures.length > 0) {
+    showToast(`Imported ${imported_} rule(s), then stopped: ${failures[0]}`, "error", 6000);
+  } else {
+    showToast(`Imported ${imported_} rule(s)`, "info", 2500);
+  }
+  await refreshUsage();
 }
 
 // ── Init ────────────────────────────────────────────────────
@@ -394,14 +624,31 @@ async function init() {
   initEditor();
   setupMatchTable();
 
-  rules = await getRules();
-  renderRuleList();
-
   document.getElementById("exportBtn").addEventListener("click", exportRules);
   document.getElementById("importBtn").addEventListener("click", importFromFile);
   document.getElementById("importUrlBtn").addEventListener("click", importFromUrl);
 
-  if (rules.length > 0) loadRule(rules[0].id);
+  store.subscribe((snapshot) => applySnapshot(snapshot), { immediate: false });
+
+  try {
+    const snapshot = await store.load();
+    rules = snapshot.rules;
+    bootstrapped = true;
+    renderRuleList();
+    if (rules.length > 0) {
+      loadRule(rules[0].id);
+    } else {
+      document.getElementById("editorPanel").style.display = "none";
+    }
+  } catch (err) {
+    bootstrapped = true;
+    showToast("Could not read synced settings: " + err.message, "error", 8000);
+  }
+
+  await refreshUsage();
+  window.addEventListener("beforeunload", () => {
+    clearTimeout(autoSaveTimer);
+  });
 }
 
 init();

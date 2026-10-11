@@ -24,4 +24,13 @@ export default [
       "prefer-const": "warn",
     },
   },
+  {
+    // Unit tests run under Node, not in a browser or extension context.
+    files: ["test/**/*.js"],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
 ];

@@ -1,99 +1,160 @@
-const STORAGE_KEY = "chai_rules";
-const GLOBAL_ENABLED_KEY = "chai_global_enabled";
+import { createRuleStore } from "./src/shared/ruleStore.js";
+import { ruleMatches } from "./src/shared/rules.js";
 
-let rules = [];
-let globalEnabled = true;
+const store = createRuleStore({ onError: (err) => showError(err.message) });
+
 let currentUrl = "";
 let currentHostname = "";
+let snapshot = { rules: [], globalEnabled: true };
 
-// Test if entry matches current page
-function testEntry(entry) {
-  if (entry.matchType === "domain") {
-    return currentHostname === entry.value || currentHostname.endsWith("." + entry.value);
-  } else if (entry.matchType === "regex") {
-    try { return new RegExp(entry.value).test(currentUrl); } catch { return false; }
-  }
-  return false;
+// ── Safe DOM helpers ────────────────────────────────────────
+// Rule names and match values are user/import controlled, so the popup builds
+// nodes explicitly instead of interpolating them into markup.
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
 }
 
-// Check if rule matches current page
-function ruleMatchesCurrentPage(rule) {
-  const wl = rule.whitelist || [];
-  const bl = rule.blacklist || [];
-  if (wl.length === 0) return false;
-  if (!wl.some(testEntry)) return false;
-  if (bl.some(testEntry)) return false;
-  return true;
-}
-
-// Render stats
 function renderStats() {
-  const enabledCount = rules.filter(r => r.enabled).length;
-  document.getElementById("statsText").textContent = `${enabledCount} rule${enabledCount !== 1 ? "s" : ""} enabled`;
+  const enabledCount = snapshot.rules.filter((r) => r.enabled).length;
+  document.getElementById("statsText").textContent =
+    `${enabledCount} rule${enabledCount !== 1 ? "s" : ""} enabled`;
 }
 
-// Render current page rules
 function renderCurrentRules() {
   const container = document.getElementById("currentRules");
-  const matchingRules = rules.filter(ruleMatchesCurrentPage);
+  container.replaceChildren();
 
-  if (matchingRules.length === 0) {
-    container.innerHTML = '<div class="empty-message">No rules match this page</div>';
+  // Deliberately ignores `enabled`: the popup lists every rule that governs this
+  // page, including the ones currently switched off.
+  const matches = snapshot.rules.filter((rule) =>
+    ruleMatches({ ...rule, enabled: true }, currentUrl, currentHostname),
+  );
+
+  if (matches.length === 0) {
+    container.append(el("div", "empty-message", "No rules match this page"));
     return;
   }
 
-  container.innerHTML = matchingRules.map(rule => `
-    <div class="rule-item-popup ${rule.enabled ? "" : "disabled"}">
-      <span class="rule-name-popup">${rule.name || "Untitled"}</span>
-      <label class="toggle rule-toggle-popup">
-        <input type="checkbox" ${rule.enabled ? "checked" : ""} data-id="${rule.id}">
-        <span class="toggle-slider"></span>
-      </label>
-    </div>
-  `).join("");
+  for (const rule of matches) {
+    const item = el("div", `rule-item-popup${rule.enabled ? "" : " disabled"}`);
 
-  container.querySelectorAll("input[type=checkbox]").forEach(input => {
+    const name = el("span", "rule-name-popup", rule.name || "Untitled");
+    name.title = rule.name || "Untitled";
+
+    const label = el("label", "toggle rule-toggle-popup");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = rule.enabled;
+    input.dataset.id = rule.id;
+    input.setAttribute("aria-label", `Toggle ${rule.name || "rule"} on this page`);
     input.addEventListener("change", async () => {
-      const rule = rules.find(r => r.id === input.dataset.id);
-      if (rule) {
-        rule.enabled = input.checked;
-        await chrome.storage.sync.set({ [STORAGE_KEY]: rules });
-        renderStats();
+      input.disabled = true;
+      try {
+        await store.updateRule(rule.id, { enabled: input.checked });
+      } catch (err) {
+        input.checked = !input.checked;
+        showError(err.message);
+      } finally {
+        input.disabled = false;
       }
     });
-  });
+
+    label.append(input, el("span", "toggle-slider"));
+    item.append(name, label);
+    container.append(item);
+  }
 }
 
-// Init
+// ── Error surface ───────────────────────────────────────────
+function showError(message) {
+  const banner = document.getElementById("errorBanner");
+  if (!banner) return;
+  banner.textContent = message;
+  banner.hidden = false;
+}
+
+function hideError() {
+  const banner = document.getElementById("errorBanner");
+  if (banner) banner.hidden = true;
+}
+
+/** The service worker records the last persistent failure for the popup to show. */
+async function readBackgroundError() {
+  try {
+    const stored = await chrome.storage.session?.get?.("chai_last_error");
+    const last = stored?.chai_last_error;
+    if (!last) return;
+    const age = Date.now() - (last.at || 0);
+    if (age < 24 * 60 * 60 * 1000) showError(last.message);
+  } catch {
+    // storage.session may be unavailable; the badge would still be set.
+  }
+}
+
+// ── Init ────────────────────────────────────────────────────
+function describeTab(tab) {
+  const url = tab?.url || "";
+  if (!url) return { url: "", hostname: "" };
+  try {
+    const parsed = new URL(url);
+    // Restricted pages (chrome://, edge://, about:, extension pages) cannot be
+    // styled by content scripts; report an empty hostname rather than throwing.
+    if (!/^https?:$/.test(parsed.protocol)) return { url: "", hostname: "" };
+    return { url, hostname: parsed.hostname };
+  } catch {
+    return { url: "", hostname: "" };
+  }
+}
+
 async function init() {
-  // Get current tab URL
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  currentUrl = tab.url;
-  currentHostname = new URL(tab.url).hostname;
+  hideError();
+  await readBackgroundError();
 
-  // Load rules and global state
-  const result = await chrome.storage.sync.get([STORAGE_KEY, GLOBAL_ENABLED_KEY]);
-  rules = result[STORAGE_KEY] || [];
-  globalEnabled = result[GLOBAL_ENABLED_KEY] !== false;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    ({ url: currentUrl, hostname: currentHostname } = describeTab(tab));
+  } catch {
+    currentUrl = "";
+    currentHostname = "";
+  }
 
-  // Set global toggle
-  document.getElementById("globalToggle").checked = globalEnabled;
-
-  // Render
-  renderStats();
-  renderCurrentRules();
-
-  // Global toggle handler
-  document.getElementById("globalToggle").addEventListener("change", async (e) => {
-    globalEnabled = e.target.checked;
-    await chrome.storage.sync.set({ [GLOBAL_ENABLED_KEY]: globalEnabled });
+  const globalToggle = document.getElementById("globalToggle");
+  globalToggle.addEventListener("change", async () => {
+    globalToggle.disabled = true;
+    try {
+      await store.setGlobalEnabled(globalToggle.checked);
+    } catch (err) {
+      globalToggle.checked = !globalToggle.checked;
+      showError(err.message);
+    } finally {
+      globalToggle.disabled = false;
+    }
   });
 
-  // Open options button
   document.getElementById("openOptions").addEventListener("click", () => {
     chrome.runtime.openOptionsPage();
   });
+
+  store.subscribe((next) => {
+    snapshot = next;
+    globalToggle.checked = next.globalEnabled;
+    renderStats();
+    renderCurrentRules();
+  }, { immediate: false });
+
+  try {
+    snapshot = await store.load();
+    globalToggle.checked = snapshot.globalEnabled;
+    renderStats();
+    renderCurrentRules();
+  } catch (err) {
+    showError(`Could not read synced settings: ${err.message}`);
+    renderStats();
+    renderCurrentRules();
+  }
 }
 
 init();
-

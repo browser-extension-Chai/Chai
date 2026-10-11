@@ -78,6 +78,15 @@ body {
   background: #fff;
 }
 
+.error-banner {
+  padding: 8px 14px;
+  background: #3a2427;
+  color: #e06c75;
+  font-size: 12px;
+  line-height: 1.4;
+  border-bottom: 1px solid #e06c75;
+}
+
 .popup-stats {
   padding: 10px 14px;
   background: #2c313c;

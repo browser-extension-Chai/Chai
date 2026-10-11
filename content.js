@@ -1,51 +1,54 @@
-const STORAGE_KEY = "chai_rules";
-const GLOBAL_ENABLED_KEY = "chai_global_enabled";
+import { createRuleStore } from "./src/shared/ruleStore.js";
+import { matchingRules } from "./src/shared/rules.js";
 
-function testEntry(entry, url, hostname) {
-  if (entry.matchType === "domain") {
-    return hostname === entry.value || hostname.endsWith("." + entry.value);
-  } else if (entry.matchType === "regex") {
-    try { return new RegExp(entry.value).test(url); } catch { return false; }
+const STYLE_PREFIX = "chai-";
+
+/**
+ * Content scripts run in the page's isolated world, so injected <style> text is
+ * the only thing that reaches the DOM — rule values are never interpolated into
+ * markup here. Matching is delegated to the shared pure layer so the popup, the
+ * service worker and this script can never disagree about what matches.
+ */
+const store = createRuleStore({ onError: () => {} });
+
+function clearInjectedStyles() {
+  for (const el of document.querySelectorAll(`style[id^='${STYLE_PREFIX}']`)) {
+    el.remove();
   }
-  return false;
 }
 
-function ruleMatches(rule, url, hostname) {
-  const wl = rule.whitelist || [];
-  const bl = rule.blacklist || [];
-  if (wl.length === 0) return false;
-  if (!wl.some(e => testEntry(e, url, hostname))) return false;
-  if (bl.some(e => testEntry(e, url, hostname))) return false;
-  return true;
-}
-
-async function applyRules() {
-  const result = await chrome.storage.sync.get([STORAGE_KEY, GLOBAL_ENABLED_KEY]);
-  const rules = result[STORAGE_KEY] || [];
-  const globalEnabled = result[GLOBAL_ENABLED_KEY] !== false;
-
-  document.querySelectorAll("style[id^='chai-']").forEach(el => el.remove());
-
-  if (!globalEnabled) return;
+function applyRules(snapshot) {
+  clearInjectedStyles();
+  if (!snapshot.globalEnabled) return;
 
   const url = window.location.href;
   const hostname = window.location.hostname;
+  const matched = matchingRules(snapshot.rules, url, hostname);
 
-  for (const rule of rules) {
-    if (!rule.enabled) continue;
-    if (!ruleMatches(rule, url, hostname)) continue;
-
+  for (const rule of matched) {
     const style = document.createElement("style");
-    style.id = `chai-${rule.id}`;
+    // Rule ids are generated as UUIDs; anything else is rejected at write time.
+    // Assigning through the property (not setAttribute) keeps the value inert.
+    style.id = `${STYLE_PREFIX}${String(rule.id).replace(/[^A-Za-z0-9_-]/g, "")}`;
     style.textContent = rule.css;
     document.documentElement.appendChild(style);
   }
 }
 
-applyRules();
+let started = false;
 
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "sync" && (changes[STORAGE_KEY] || changes[GLOBAL_ENABLED_KEY])) {
-    applyRules();
-  }
+function start(snapshot) {
+  started = true;
+  applyRules(snapshot);
+}
+
+store.subscribe((snapshot) => {
+  // A change arriving before the first load would otherwise paint styles twice.
+  if (started) applyRules(snapshot);
+});
+
+store.load().then(start).catch(() => {
+  // Storage unavailable (for example sync is disabled account-wide). The page is
+  // better off unstyled than broken, so fail quietly.
+  clearInjectedStyles();
 });

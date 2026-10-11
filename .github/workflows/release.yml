@@ -20,6 +20,8 @@ jobs:
 
       - run: npm run lint
 
+      - run: npm test
+
       - run: npm run build
 
       - name: Package extension
